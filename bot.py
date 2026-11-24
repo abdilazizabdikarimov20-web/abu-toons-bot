@@ -65,8 +65,8 @@ def make_story():
         '"scenes": [{"narration": "1 short English sentence '
         '(10-15 words)", "image_prompt": "3D Pixar Disney '
         "animation still frame, cute expressive characters, "
-        "cinematic lighting, vibrant colors, vertical 9:16, "
-        'no text, describing this exact scene"}]}\n'
+        "cinematic lighting, vibrant colors, no text, "
+        'describing this exact scene"}]}\n'
         "Rules: Exactly 6 scenes with a heartwarming ending. "
         "Keep character look consistent across all 6 scenes."
     )
@@ -102,48 +102,26 @@ def make_story():
     raise RuntimeError(f"Story failed: {err}")
 
 
-def img_gemini(prompt, path):
-    full = f"Vertical 9:16 3D Pixar animated frame, no text: {prompt}"
-    for model in ["gemini-2.5-flash-image", "gemini-2.0-flash-exp-image-generation"]:
-        url = (
-            f"{H}generativelanguage.googleapis.com"
-            f"/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
-        )
-        body = {
-            "contents": [{"parts": [{"text": full}]}],
-            "generationConfig": {"responseModalities": ["IMAGE", "TEXT"]},
-        }
-        try:
-            r = requests.post(url, json=body, timeout=60)
-            if r.status_code == 200:
-                parts = r.json()["candidates"][0]["content"]["parts"]
-                for p in parts:
-                    inl = p.get("inlineData") or p.get("inline_data")
-                    if inl and inl.get("data"):
-                        raw = base64.b64decode(inl["data"])
-                        if len(raw) > 5000:
-                            with open(path, "wb") as f:
-                                f.write(raw)
-                            print("Img via Gemini")
-                            return True
-        except Exception:
-            pass
-    return False
-
-
 def img_horde(prompt, path):
     api = f"{H}aihorde.net/api/v2/generate"
     hdr = {
         "apikey": "0000000000",
-        "Client-Agent": "AbuToons:1.0:gh",
+        "Client-Agent": "AbuToonsBot:1.0:abutoons@gmail.com",
         "Content-Type": "application/json",
     }
+    clean_p = prompt[:320].replace("#", "")
     body = {
-        "prompt": f"3d pixar animation style, {prompt[:380]}",
+        "prompt": (
+            f"3d pixar disney animation style, cute character, "
+            f"cinematic lighting, vibrant colors, {clean_p} "
+            f"### text, watermark, blurry, ugly, deformed"
+        ),
         "params": {
             "width": 512,
-            "height": 896,
-            "steps": 18,
+            "height": 512,
+            "steps": 16,
+            "cfg_scale": 7.5,
+            "sampler_name": "k_euler_a",
             "n": 1,
         },
         "nsfw": False,
@@ -151,92 +129,78 @@ def img_horde(prompt, path):
         "slow_workers": True,
         "r2": True,
     }
-    try:
-        r = requests.post(f"{api}/async", json=body, headers=hdr, timeout=25)
-        if r.status_code not in (200, 202):
-            return False
-        jid = r.json().get("id")
-        if not jid:
-            return False
-        for _ in range(30):
-            time.sleep(4)
-            chk = requests.get(f"{api}/check/{jid}", headers=hdr, timeout=20)
-            if chk.status_code == 200:
-                info = chk.json()
-                if info.get("faulted"):
-                    return False
-                if info.get("done"):
-                    st = requests.get(f"{api}/status/{jid}", headers=hdr, timeout=20)
-                    gens = st.json().get("generations", [])
-                    val = gens[0].get("img") if gens else None
-                    if val:
-                        raw = (
-                            requests.get(val, timeout=45).content
-                            if val.startswith("http")
-                            else base64.b64decode(val)
+    for attempt in range(2):
+        try:
+            r = requests.post(
+                f"{api}/async", json=body, headers=hdr, timeout=25
+            )
+            if r.status_code not in (200, 202):
+                print(f"Horde submit {r.status_code}: {r.text[:120]}")
+                time.sleep(5)
+                continue
+            jid = r.json().get("id")
+            if not jid:
+                continue
+            for _ in range(35):
+                time.sleep(4)
+                chk = requests.get(
+                    f"{api}/check/{jid}", headers=hdr, timeout=20
+                )
+                if chk.status_code == 200:
+                    info = chk.json()
+                    if info.get("faulted"):
+                        print("Horde job faulted")
+                        break
+                    if info.get("done"):
+                        st = requests.get(
+                            f"{api}/status/{jid}", headers=hdr, timeout=20
                         )
-                        if len(raw) > 5000:
-                            with open(path, "wb") as f:
-                                f.write(raw)
-                            print("Img via AI Horde")
-                            return True
-                    return False
-    except Exception:
-        pass
+                        gens = st.json().get("generations", [])
+                        val = gens[0].get("img") if gens else None
+                        if val:
+                            raw = (
+                                requests.get(val, timeout=45).content
+                                if val.startswith("http")
+                                else base64.b64decode(val)
+                            )
+                            if len(raw) > 5000:
+                                with open(path, "wb") as f:
+                                    f.write(raw)
+                                print("Img ok via AI Horde")
+                                return True
+                        break
+        except Exception as e:
+            print(f"Horde err: {e}")
+        time.sleep(4)
     return False
 
 
 def img_pollinations(prompt, path):
-    enc = urllib.parse.quote(prompt[:350])
+    enc = urllib.parse.quote(prompt[:300])
     seed = random.randint(1, 999999)
     hdr = {"User-Agent": "Mozilla/5.0"}
-    for t in range(2):
-        url = f"{H}image.pollinations.ai/prompt/{enc}?width=576&height=1024&seed={seed + t}"
-        try:
-            r = requests.get(url, headers=hdr, timeout=60)
-            ct = r.headers.get("content-type", "")
-            if r.status_code == 200 and len(r.content) > 10000 and "image" in ct:
-                with open(path, "wb") as f:
-                    f.write(r.content)
-                print("Img via Pollinations")
-                return True
-        except Exception:
-            pass
-        time.sleep(12)
-    return False
-
-
-def img_lexica(prompt, path):
-    q = urllib.parse.quote(f"3d pixar cute animation {prompt[:80]}")
-    url = f"{H}lexica.art/api/v1/search?q={q}"
-    hdr = {"User-Agent": "Mozilla/5.0"}
+    url = (
+        f"{H}image.pollinations.ai/prompt/{enc}"
+        f"?width=512&height=512&seed={seed}"
+    )
     try:
-        r = requests.get(url, headers=hdr, timeout=25)
-        if r.status_code == 200:
-            imgs = r.json().get("images", [])
-            random.shuffle(imgs)
-            for item in imgs[:8]:
-                src = item.get("src")
-                if src:
-                    ir = requests.get(src, headers=hdr, timeout=30)
-                    if ir.status_code == 200 and len(ir.content) > 10000:
-                        with open(path, "wb") as f:
-                            f.write(ir.content)
-                        print("Img via Lexica")
-                        return True
-    except Exception:
-        pass
+        r = requests.get(url, headers=hdr, timeout=60)
+        ct = r.headers.get("content-type", "")
+        if r.status_code == 200 and len(r.content) > 8000 and "image" in ct:
+            with open(path, "wb") as f:
+                f.write(r.content)
+            print("Img ok via Pollinations")
+            return True
+        print(f"Pollinations status: {r.status_code}")
+    except Exception as e:
+        print(f"Pollinations err: {e}")
     return False
 
 
 def get_image(prompt, path):
-    if img_gemini(prompt, path):
-        return
     if img_horde(prompt, path):
         return
     if img_pollinations(prompt, path):
-        return
-    if img_lexica(prompt, path):
         return
     raise RuntimeError(f"Image failed: {path}")
 
@@ -277,7 +241,10 @@ def make_video(scenes):
         f.writelines(clips)
     out = "final_short.mp4"
     subprocess.run(
-        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "work/list.txt", "-c", "copy", out],
+        [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "-i", "work/list.txt", "-c", "copy", out,
+        ],
         check=True,
     )
     return out
@@ -306,7 +273,9 @@ def upload_yt(video, title, desc):
         "status": {"privacyStatus": "public", "selfDeclaredMadeForKids": False},
     }
     media = MediaFileUpload(video, mimetype="video/mp4", resumable=True)
-    res = yt.videos().insert(part="snippet,status", body=body, media_body=media).execute()
+    res = yt.videos().insert(
+        part="snippet,status", body=body, media_body=media
+    ).execute()
     print("SUCCESS! Video ID:", res.get("id"))
 
 
