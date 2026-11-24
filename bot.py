@@ -30,6 +30,29 @@ TOPICS = [
 ]
 
 
+def get_gemini_models():
+    models = ["gemini-3.8-flash"]
+    try:
+        r = requests.get(
+            f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}",
+            timeout=20,
+        )
+        if r.status_code == 200:
+            for m in r.json().get("models", []):
+                name = m.get("name", "").replace("models/", "")
+                methods = m.get("supportedGenerationMethods", [])
+                if (
+                    "generateContent" in methods
+                    and "flash" in name
+                    and not any(x in name for x in ["image", "tts", "audio", "lite"])
+                    and name not in models
+                ):
+                    models.append(name)
+    except Exception:
+        pass
+    return models
+
+
 def generate_story():
     topic = random.choice(TOPICS)
     prompt = f"""Create an emotional, heartwarming, viral 45-second 3D Pixar/Disney style animated YouTube Short story about: {topic}.
@@ -49,7 +72,8 @@ Rules:
 - Keep consistent character appearance across all 6 image_prompt descriptions.
 - Never include text, subtitles, or watermarks in image_prompt."""
 
-    for model in ["gemini-2.5-flash", "gemini-2.0-flash"]:
+    last_error = ""
+    for model in get_gemini_models():
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
@@ -60,15 +84,18 @@ Rules:
         }
         resp = requests.post(url, json=payload, timeout=60)
         if resp.status_code == 200:
-            raw_text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+            raw_text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            if raw_text.startswith("```"):
+                raw_text = raw_text.strip("`").removeprefix("json").strip()
             return json.loads(raw_text)
-    raise RuntimeError(f"Gemini API error: {resp.status_code} {resp.text}")
+        last_error = f"{model}: {resp.status_code} {resp.text}"
+    raise RuntimeError(f"Gemini API error: {last_error}")
 
 
 def download_image(prompt, filename):
     encoded = urllib.parse.quote(prompt)
     seed = random.randint(1, 999999)
-    url = f"https://image.pollinations.ai/prompt/{encoded}?width=1080&height=1920&model=flux&nologo=true&seed={seed}"
+    url = f"[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/){encoded}?width=1080&height=1920&model=flux&nologo=true&seed={seed}"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     for attempt in range(4):
         try:
@@ -134,7 +161,7 @@ def upload_to_youtube(video_path, title, description):
     creds = Credentials(
         token=None,
         refresh_token=YT_REFRESH_TOKEN,
-        token_uri="https://oauth2.googleapis.com/token",
+        token_uri="[https://oauth2.googleapis.com/token](https://oauth2.googleapis.com/token)",
         client_id=YT_CLIENT_ID,
         client_secret=YT_CLIENT_SECRET,
     )
