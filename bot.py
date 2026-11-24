@@ -12,7 +12,11 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-H = "https" + "://"
+G_API = "generativelanguage.google" + "apis.com"
+O_URI = "https" + "://oauth2.google" + "apis.com/token"
+HORDE = "https" + "://aihorde." + "net/api/v2/generate"
+POLLI = "https" + "://image.pollinations." + "ai/prompt/"
+
 GEMINI_KEY = os.environ["GEMINI_API_KEY"].strip()
 YT_ID = os.environ["YT_CLIENT_ID"].strip()
 YT_SEC = os.environ["YT_CLIENT_SECRET"].strip()
@@ -34,7 +38,7 @@ TOPICS = [
 
 def get_models():
     models = ["gemini-3-flash-preview", "gemini-2.5-flash"]
-    url = f"{H}generativelanguage.googleapis.com/v1beta/models?key={GEMINI_KEY}"
+    url = f"https://{G_API}/v1beta/models?key={GEMINI_KEY}"
     try:
         r = requests.get(url, timeout=20)
         if r.status_code == 200:
@@ -73,8 +77,8 @@ def make_story():
     err = ""
     for model in get_models():
         url = (
-            f"{H}generativelanguage.googleapis.com"
-            f"/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
+            f"https://{G_API}/v1beta/models/"
+            f"{model}:generateContent?key={GEMINI_KEY}"
         )
         body = {
             "contents": [{"parts": [{"text": prompt}]}],
@@ -103,10 +107,9 @@ def make_story():
 
 
 def img_horde(prompt, path):
-    api = f"{H}aihorde.net/api/v2/generate"
     hdr = {
         "apikey": "0000000000",
-        "Client-Agent": "AbuToonsBot:1.0:abutoons@gmail.com",
+        "Client-Agent": "AbuToonsBot:1.0:abutoons",
         "Content-Type": "application/json",
     }
     clean_p = prompt[:320].replace("#", "")
@@ -129,13 +132,12 @@ def img_horde(prompt, path):
         "slow_workers": True,
         "r2": True,
     }
-    for attempt in range(2):
+    for _ in range(2):
         try:
             r = requests.post(
-                f"{api}/async", json=body, headers=hdr, timeout=25
+                f"{HORDE}/async", json=body, headers=hdr, timeout=25
             )
             if r.status_code not in (200, 202):
-                print(f"Horde submit {r.status_code}: {r.text[:120]}")
                 time.sleep(5)
                 continue
             jid = r.json().get("id")
@@ -144,16 +146,15 @@ def img_horde(prompt, path):
             for _ in range(35):
                 time.sleep(4)
                 chk = requests.get(
-                    f"{api}/check/{jid}", headers=hdr, timeout=20
+                    f"{HORDE}/check/{jid}", headers=hdr, timeout=20
                 )
                 if chk.status_code == 200:
                     info = chk.json()
                     if info.get("faulted"):
-                        print("Horde job faulted")
                         break
                     if info.get("done"):
                         st = requests.get(
-                            f"{api}/status/{jid}", headers=hdr, timeout=20
+                            f"{HORDE}/status/{jid}", headers=hdr, timeout=20
                         )
                         gens = st.json().get("generations", [])
                         val = gens[0].get("img") if gens else None
@@ -179,10 +180,7 @@ def img_pollinations(prompt, path):
     enc = urllib.parse.quote(prompt[:300])
     seed = random.randint(1, 999999)
     hdr = {"User-Agent": "Mozilla/5.0"}
-    url = (
-        f"{H}image.pollinations.ai/prompt/{enc}"
-        f"?width=512&height=512&seed={seed}"
-    )
+    url = f"{POLLI}{enc}?width=512&height=512&seed={seed}"
     try:
         r = requests.get(url, headers=hdr, timeout=60)
         ct = r.headers.get("content-type", "")
@@ -191,9 +189,8 @@ def img_pollinations(prompt, path):
                 f.write(r.content)
             print("Img ok via Pollinations")
             return True
-        print(f"Pollinations status: {r.status_code}")
-    except Exception as e:
-        print(f"Pollinations err: {e}")
+    except Exception:
+        pass
     return False
 
 
@@ -255,7 +252,7 @@ def upload_yt(video, title, desc):
     creds = Credentials(
         token=None,
         refresh_token=YT_REF,
-        token_uri=f"{H}[oauth2.googleapis.com/token](https://oauth2.googleapis.com/token)",
+        token_uri=O_URI,
         client_id=YT_ID,
         client_secret=YT_SEC,
     )
