@@ -11,6 +11,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
+HTTPS = "https" + "://"
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"].strip()
 YT_CLIENT_ID = os.environ["YT_CLIENT_ID"].strip()
 YT_CLIENT_SECRET = os.environ["YT_CLIENT_SECRET"].strip()
@@ -34,8 +35,8 @@ def get_gemini_models():
     models = ["gemini-3.8-flash"]
     try:
         r = requests.get(
-            f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}",
-            timeout=20,
+            f"{HTTPS}generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}",
+            timeout=25,
         )
         if r.status_code == 200:
             for m in r.json().get("models", []):
@@ -44,7 +45,7 @@ def get_gemini_models():
                 if (
                     "generateContent" in methods
                     and "flash" in name
-                    and not any(x in name for x in ["image", "tts", "audio", "lite"])
+                    and not any(x in name for x in ["image", "tts", "audio", "lite", "thinking"])
                     and name not in models
                 ):
                     models.append(name)
@@ -74,7 +75,7 @@ Rules:
 
     last_error = ""
     for model in get_gemini_models():
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+        url = f"{HTTPS}generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
@@ -82,31 +83,43 @@ Rules:
                 "temperature": 0.9,
             },
         }
-        resp = requests.post(url, json=payload, timeout=60)
-        if resp.status_code == 200:
-            raw_text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-            if raw_text.startswith("```"):
-                raw_text = raw_text.strip("`").removeprefix("json").strip()
-            return json.loads(raw_text)
-        last_error = f"{model}: {resp.status_code} {resp.text}"
+        for attempt in range(2):
+            try:
+                print(f"[1/4] Generating story with {model} (attempt {attempt + 1})...")
+                resp = requests.post(url, json=payload, timeout=120)
+                if resp.status_code == 200:
+                    raw_text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    if raw_text.startswith("```"):
+                        raw_text = raw_text.strip("`").removeprefix("json").strip()
+                    return json.loads(raw_text)
+                last_error = f"{model}: {resp.status_code} {resp.text}"
+                if resp.status_code in (400, 404):
+                    break
+            except Exception as e:
+                last_error = f"{model}: {e}"
+                print(f"Retrying story generation: {e}")
+            time.sleep(3)
     raise RuntimeError(f"Gemini API error: {last_error}")
 
 
 def download_image(prompt, filename):
-    encoded = urllib.parse.quote(prompt)
+    encoded = urllib.parse.quote(prompt[:450])
     seed = random.randint(1, 999999)
-    url = f"[https://image.pollinations.ai/prompt/](https://image.pollinations.ai/prompt/){encoded}?width=1080&height=1920&model=flux&nologo=true&seed={seed}"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    for attempt in range(4):
+    for attempt in range(5):
+        model_param = "&model=flux" if attempt < 3 else ""
+        url = f"{HTTPS}image.pollinations.ai/prompt/{encoded}?width=768&height=1344{model_param}&nologo=true&seed={seed + attempt}"
         try:
             r = requests.get(url, headers=headers, timeout=90)
-            if r.status_code == 200 and len(r.content) > 15000:
+            ctype = r.headers.get("content-type", "")
+            if r.status_code == 200 and len(r.content) > 10000 and "image" in ctype:
                 with open(filename, "wb") as f:
                     f.write(r.content)
                 return
+            print(f"Image attempt {attempt + 1} status={r.status_code} size={len(r.content)}")
         except Exception as e:
-            print(f"Image retry {attempt + 1}: {e}")
-        time.sleep(5)
+            print(f"Image attempt {attempt + 1} error: {e}")
+        time.sleep(4)
     raise RuntimeError(f"Failed to download image: {filename}")
 
 
@@ -123,75 +136,11 @@ def build_video(scenes):
         aud_path = f"work/aud_{i}.mp3"
         clip_path = f"work/clip_{i}.mp4"
 
-        print(f"Generating scene {i + 1}/{len(scenes)}...")
+        print(f"[2/4] Creating scene {i + 1}/{len(scenes)}...")
         download_image(scene["image_prompt"], img_path)
         asyncio.run(make_audio(scene["narration"], aud_path))
 
         vf = (
-            "scale=2160:3840:force_original_aspect_ratio=increase,"
+            "scale=2160:3840:force_original_aspect_ratio=increase:flags=lanczos,"
             "crop=2160:3840,"
-            "zoompan=z='min(zoom+0.0006,1.12)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920:fps=30,"
-            "format=yuv420p"
-        )
-        cmd = [
-            "ffmpeg", "-y",
-            "-loop", "1", "-i", img_path,
-            "-i", aud_path,
-            "-vf", vf,
-            "-c:v", "libx264", "-preset", "fast", "-crf", "22",
-            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-            "-shortest", clip_path,
-        ]
-        subprocess.run(cmd, check=True)
-        clip_paths.append(f"file 'clip_{i}.mp4'\n")
-
-    list_path = "work/list.txt"
-    with open(list_path, "w") as f:
-        f.writelines(clip_paths)
-
-    output_video = "final_short.mp4"
-    subprocess.run(
-        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", output_video],
-        check=True,
-    )
-    return output_video
-
-
-def upload_to_youtube(video_path, title, description):
-    creds = Credentials(
-        token=None,
-        refresh_token=YT_REFRESH_TOKEN,
-        token_uri="[https://oauth2.googleapis.com/token](https://oauth2.googleapis.com/token)",
-        client_id=YT_CLIENT_ID,
-        client_secret=YT_CLIENT_SECRET,
-    )
-    youtube = build("youtube", "v3", credentials=creds)
-    clean_title = f"{title[:88]} #Shorts"
-    full_desc = (
-        f"{description}\n\n"
-        "Subscribe to Abu Toons for daily heartwarming 3D animated stories!\n"
-        "#Shorts #3DAnimation #PixarStyle #AnimatedShort #StoryTime #AbuToons"
-    )
-    body = {
-        "snippet": {
-            "title": clean_title,
-            "description": full_desc,
-            "tags": ["Shorts", "3D Animation", "Pixar Style", "Cartoon", "Animation", "Abu Toons"],
-            "categoryId": "1",
-        },
-        "status": {
-            "privacyStatus": "public",
-            "selfDeclaredMadeForKids": False,
-        },
-    }
-    media = MediaFileUpload(video_path, mimetype="video/mp4", resumable=True)
-    request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
-    response = request.execute()
-    print("Uploaded successfully! Video ID:", response.get("id"))
-
-
-if __name__ == "__main__":
-    story = generate_story()
-    print("Story generated:", story["title"])
-    video_file = build_video(story["scenes"])
-    upload_to_youtube(video_file, story["title"], story["description"])
+            "zoompan
