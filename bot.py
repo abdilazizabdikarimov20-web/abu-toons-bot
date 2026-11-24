@@ -4,6 +4,7 @@ import json
 import math
 import os
 import random
+import re
 import struct
 import subprocess
 import textwrap
@@ -189,46 +190,3 @@ def img_pollinations(prompt, path):
         r = requests.get(url, headers=hdr, timeout=60)
         ct = r.headers.get("content-type", "")
         if r.status_code == 200 and len(r.content) > 8000 and "image" in ct:
-            with open(path, "wb") as f:
-                f.write(r.content)
-            print("Img ok via Pollinations")
-            return True
-    except Exception:
-        pass
-    return False
-
-
-def get_image(prompt, path):
-    if img_horde(prompt, path):
-        return
-    if img_pollinations(prompt, path):
-        return
-    raise RuntimeError(f"Image failed: {path}")
-
-
-def create_sad_piano_bgm(path, duration=75):
-    sr = 44100
-    # Am -> F -> C -> G emotional progression (Hz)
-    chords = [
-        [220.00, 261.63, 329.63, 440.00],
-        [174.61, 220.00, 261.63, 349.23],
-        [130.81, 196.00, 261.63, 329.63],
-        [196.00, 246.94, 293.66, 392.00],
-    ]
-    bar_sec = 3.2
-    total_samples = int(sr * duration)
-    buf = bytearray()
-    for n in range(total_samples):
-        t = n / sr
-        bar_idx = int(t / bar_sec) % len(chords)
-        bar_t = t % bar_sec
-        chord = chords[bar_idx]
-        val = 0.0
-        for idx, freq in enumerate(chord):
-            note_start = idx * 0.45
-            if bar_t >= note_start:
-                nt = bar_t - note_start
-                env = min(nt * 12.0, 1.0) * math.exp(-nt * 1.15)
-                tone = (
-                    0.75 * math.sin(2.0 * math.pi * freq * nt)
-                    + 0.25 * math.sin
