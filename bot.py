@@ -1,16 +1,11 @@
 import asyncio
 import base64
 import json
-import math
 import os
 import random
-import re
-import struct
 import subprocess
-import textwrap
 import time
 import urllib.parse
-import wave
 import edge_tts
 import requests
 from google.oauth2.credentials import Credentials
@@ -28,16 +23,16 @@ YT_SEC = os.environ["YT_CLIENT_SECRET"].strip()
 YT_REF = os.environ["YT_REFRESH_TOKEN"].strip()
 
 TOPICS = [
-    "an old stray dog waiting every rainy evening at a train station for his owner who never returned",
-    "a tiny wooden robot sacrificing its glowing heart battery to save a dying baby bird in winter",
-    "a lonely elderly grandfather and a small street kitten sharing their last piece of bread",
-    "a mother bird shielding her baby chicks from a freezing snowstorm with her own wings",
-    "a worn-out teddy bear secretly protecting a crying child from nightmares every night",
-    "a blind old street musician and the loyal puppy who guides him through the busy city",
-    "a tiny wilted flower in a cracked concrete alley saved by a poor boy's last drop of water",
-    "a retired firehouse dog rescuing a trapped kitten from a burning building despite his limp",
-    "a little paper boat sailing across a stormy puddle to deliver a child's wish to the stars",
-    "a grumpy lonely clockmaker whose life changes when a shivering duckling taps on his window",
+    "a tiny clumsy robot watering a glowing flower in a greenhouse",
+    "a brave street kitten rescuing a lost baby duckling in the rain",
+    "a grumpy old baker and a tiny mouse secretly baking bread",
+    "a wooden toy soldier protecting a sleeping child at midnight",
+    "a baby dragon who sneezes snowflakes instead of fire",
+    "a lonely lighthouse keeper befriending a glowing baby whale",
+    "a tiny cloud afraid of thunder learning to make rainbows",
+    "a curious squirrel finding a clockwork city inside an oak tree",
+    "a stray dog sharing his last bread with a shivering bird",
+    "a young wizard whose wand only makes delicious pastries",
 ]
 
 
@@ -66,18 +61,18 @@ def get_models():
 def make_story():
     topic = random.choice(TOPICS)
     prompt = (
-        "Write a deeply emotional, tear-jerking 45-second 3D Pixar/Disney "
-        f"style YouTube Short story about: {topic}.\n"
+        "Write an emotional 45-second 3D Pixar/Disney style "
+        f"YouTube Short story about: {topic}.\n"
         "Return ONLY valid JSON:\n"
-        '{"title": "Emotional English title under 65 chars", '
-        '"description": "Heartfelt 2-sentence story summary", '
-        '"scenes": [{"narration": "1 deeply emotional, poetic English '
-        'sentence (10-15 words)", "image_prompt": "3D Pixar Disney '
-        "animation movie still frame, expressive emotional eyes, "
-        "cinematic warm and dramatic lighting, shallow depth of field, "
-        'no text, describing this exact scene"}]}\n'
-        "Rules: Exactly 6 scenes building up to a touching, unforgettable "
-        "ending. Keep character appearance identical across all 6 scenes."
+        '{"title": "Catchy English title under 65 chars", '
+        '"description": "Short 2-sentence story summary", '
+        '"scenes": [{"narration": "1 short English sentence '
+        '(10-15 words)", "image_prompt": "3D Pixar Disney '
+        "animation still frame, cute expressive characters, "
+        "cinematic lighting, vibrant colors, no text, "
+        'describing this exact scene"}]}\n'
+        "Rules: Exactly 6 scenes with a heartwarming ending. "
+        "Keep character look consistent across all 6 scenes."
     )
     err = ""
     for model in get_models():
@@ -120,8 +115,8 @@ def img_horde(prompt, path):
     clean_p = prompt[:320].replace("#", "")
     body = {
         "prompt": (
-            f"3d pixar disney animation style, cute expressive character, "
-            f"cinematic emotional lighting, vibrant colors, {clean_p} "
+            f"3d pixar disney animation style, cute character, "
+            f"cinematic lighting, vibrant colors, {clean_p} "
             f"### text, watermark, blurry, ugly, deformed"
         ),
         "params": {
@@ -190,3 +185,99 @@ def img_pollinations(prompt, path):
         r = requests.get(url, headers=hdr, timeout=60)
         ct = r.headers.get("content-type", "")
         if r.status_code == 200 and len(r.content) > 8000 and "image" in ct:
+            with open(path, "wb") as f:
+                f.write(r.content)
+            print("Img ok via Pollinations")
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def get_image(prompt, path):
+    if img_horde(prompt, path):
+        return
+    if img_pollinations(prompt, path):
+        return
+    raise RuntimeError(f"Image failed: {path}")
+
+
+async def make_audio(text, path):
+    comm = edge_tts.Communicate(text, "en-US-AndrewNeural", rate="+4%")
+    await comm.save(path)
+
+
+def make_video(scenes):
+    os.makedirs("work", exist_ok=True)
+    clips = []
+    for i, sc in enumerate(scenes):
+        ip = f"work/img_{i}.jpg"
+        ap = f"work/aud_{i}.mp3"
+        cp = f"work/clip_{i}.mp4"
+        print(f"[2/4] Scene {i + 1}/{len(scenes)}...")
+        get_image(sc["image_prompt"], ip)
+        asyncio.run(make_audio(sc["narration"], ap))
+        vf = (
+            "scale=2160:3840:force_original_aspect_ratio=increase,"
+            "crop=2160:3840,"
+            "zoompan=z=min(zoom+0.0006\\,1.12):"
+            "d=1:x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2):"
+            "s=1080x1920:fps=30,format=yuv420p"
+        )
+        cmd = [
+            "ffmpeg", "-y", "-loop", "1", "-i", ip, "-i", ap,
+            "-vf", vf, "-c:v", "libx264", "-preset", "fast",
+            "-crf", "22", "-c:a", "aac", "-b:a", "128k",
+            "-ar", "44100", "-ac", "2", "-shortest", cp,
+        ]
+        subprocess.run(cmd, check=True)
+        clips.append(f"file 'clip_{i}.mp4'\n")
+
+    print("[3/4] Merging video...")
+    with open("work/list.txt", "w") as f:
+        f.writelines(clips)
+    out = "final_short.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "-i", "work/list.txt", "-c", "copy", out,
+        ],
+        check=True,
+    )
+    return out
+
+
+def upload_yt(video, title, desc):
+    print("[4/4] Uploading to YouTube...")
+    creds = Credentials(
+        token=None,
+        refresh_token=YT_REF,
+        token_uri=O_URI,
+        client_id=YT_ID,
+        client_secret=YT_SEC,
+    )
+    yt = build("youtube", "v3", credentials=creds)
+    body = {
+        "snippet": {
+            "title": f"{title[:88]} #Shorts",
+            "description": (
+                f"{desc}\n\nSubscribe to Abu Toons!\n"
+                "#Shorts #3DAnimation #PixarStyle #AbuToons"
+            ),
+            "tags": ["Shorts", "3D Animation", "Pixar Style", "Abu Toons"],
+            "categoryId": "1",
+        },
+        "status": {"privacyStatus": "public", "selfDeclaredMadeForKids": False},
+    }
+    media = MediaFileUpload(video, mimetype="video/mp4", resumable=True)
+    res = yt.videos().insert(
+        part="snippet,status", body=body, media_body=media
+    ).execute()
+    print("SUCCESS! Video ID:", res.get("id"))
+
+
+if __name__ == "__main__":
+    st = make_story()
+    print("Title:", st["title"])
+    vf = make_video(st["scenes"])
+    upload_yt(vf, st["title"], st["description"])
